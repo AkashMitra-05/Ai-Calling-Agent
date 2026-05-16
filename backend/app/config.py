@@ -22,12 +22,25 @@ if env_path:
     logger.info(f"Loaded configuration from {env_path}")
 else:
     # Check if required keys are already in environment (e.g., Railway)
-    if os.getenv("GROQ_API_KEY") and os.getenv("SARVAM_API_KEY"):
-        pass
+    groq_key_present = bool(os.getenv("GROQ_API_KEY"))
+    sarvam_key_present = bool(os.getenv("SARVAM_API_KEY"))
+    if groq_key_present and sarvam_key_present:
+        logger.info("No .env file found — using Railway/system environment variables (GROQ_API_KEY and SARVAM_API_KEY detected).")
     else:
-        # If not found, log warning only if we're not in a container
-        if not os.getenv("KUBERNETES_SERVICE_HOST"): # Common check for container environments
-            print("No configuration file (local.env or .env) found! Using system environment variables.")
+        missing = [k for k, v in {"GROQ_API_KEY": groq_key_present, "SARVAM_API_KEY": sarvam_key_present}.items() if not v]
+        logger.warning(
+            f"No configuration file (local.env or .env) found and the following required environment "
+            f"variables are missing: {', '.join(missing)}. Using system environment variables."
+        )
+
+# Debug: log raw env values at module load time so Railway logs show what the process sees
+_raw_groq_key = os.getenv("GROQ_API_KEY", "")
+_raw_sarvam_key = os.getenv("SARVAM_API_KEY", "")
+logger.info(
+    f"[config] Environment variable check — "
+    f"GROQ_API_KEY: {'SET (length={})'.format(len(_raw_groq_key)) if _raw_groq_key else 'NOT SET or EMPTY'}, "
+    f"SARVAM_API_KEY: {'SET (length={})'.format(len(_raw_sarvam_key)) if _raw_sarvam_key else 'NOT SET or EMPTY'}"
+)
 
 # Try to import Groq, gracefully degrade if not available
 try:
@@ -78,17 +91,46 @@ class Settings(BaseSettings):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
-        # Initialize Groq client if API key is available and library is installed
-        if GROQ_AVAILABLE and self.groq_api_key:
+
+        # Debug: confirm what pydantic-settings resolved for each key after field population
+        logger.info(
+            f"[Settings.__init__] Resolved field values — "
+            f"groq_api_key: {'SET (length={})'.format(len(self.groq_api_key)) if self.groq_api_key else 'EMPTY — GROQ_API_KEY not received by pydantic-settings'}, "
+            f"sarvam_api_key: {'SET (length={})'.format(len(self.sarvam_api_key)) if self.sarvam_api_key else 'EMPTY — SARVAM_API_KEY not received by pydantic-settings'}"
+        )
+
+        # Validate required API keys and raise early with a clear message if missing
+        if not self.groq_api_key:
+            logger.error(
+                "[Settings.__init__] GROQ_API_KEY is missing or empty. "
+                "Set the GROQ_API_KEY environment variable in Railway (or your .env file) and redeploy."
+            )
+            raise ValueError(
+                "Required environment variable GROQ_API_KEY is not set. "
+                "Add it to your Railway service variables and redeploy."
+            )
+
+        if not self.sarvam_api_key:
+            logger.error(
+                "[Settings.__init__] SARVAM_API_KEY is missing or empty. "
+                "Set the SARVAM_API_KEY environment variable in Railway (or your .env file) and redeploy."
+            )
+            raise ValueError(
+                "Required environment variable SARVAM_API_KEY is not set. "
+                "Add it to your Railway service variables and redeploy."
+            )
+
+        # Initialize Groq client
+        if not GROQ_AVAILABLE:
+            logger.error("[Settings.__init__] groq package is not installed — cannot initialize Groq client.")
+            self.groq_client = None
+        else:
             try:
                 self.groq_client = Groq(api_key=self.groq_api_key)
-                logger.info("Groq client initialized from API key")
+                logger.info("[Settings.__init__] Groq client initialized successfully.")
             except Exception as e:
-                logger.error(f"Failed to initialize Groq client: {e}")
+                logger.error(f"[Settings.__init__] Failed to initialize Groq client: {e}")
                 self.groq_client = None
-        else:
-            self.groq_client = None
 
 # Create settings instance
 settings = Settings()
