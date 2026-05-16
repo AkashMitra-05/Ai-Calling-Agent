@@ -21,13 +21,21 @@ if env_path:
     load_dotenv(env_path)
     logger.info(f"Loaded configuration from {env_path}")
 else:
-    # Check if required keys are already in environment (e.g., Railway)
-    if os.getenv("GROQ_API_KEY") and os.getenv("SARVAM_API_KEY"):
-        pass
-    else:
-        # If not found, log warning only if we're not in a container
-        if not os.getenv("KUBERNETES_SERVICE_HOST"): # Common check for container environments
-            print("No configuration file (local.env or .env) found! Using system environment variables.")
+    print("No configuration file (local.env or .env) found! Using system environment variables.")
+
+# Log raw os.environ values BEFORE Settings is instantiated so we can confirm
+# what the Python process actually sees at startup (values are masked for security).
+def _mask(val: str) -> str:
+    if not val:
+        return "MISSING/EMPTY"
+    if len(val) <= 8:
+        return "****"
+    return f"{val[:4]}...{val[-4:]}"
+
+_raw_groq = os.environ.get("GROQ_API_KEY", "")
+_raw_sarvam = os.environ.get("SARVAM_API_KEY", "")
+print(f"[config] PRE-INIT os.environ GROQ_API_KEY  : {_mask(_raw_groq)}")
+print(f"[config] PRE-INIT os.environ SARVAM_API_KEY: {_mask(_raw_sarvam)}")
 
 # Try to import Groq, gracefully degrade if not available
 try:
@@ -39,68 +47,77 @@ except ImportError:
     logger.warning("groq package not installed. Groq features will be unavailable.")
 
 class Settings(BaseSettings):
-    # API Keys
-    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
-    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    sarvam_api_key: str = os.getenv("SARVAM_API_KEY", "")
+    # API Keys — NO os.getenv() defaults here.
+    # pydantic-settings reads directly from os.environ, so using os.getenv() as
+    # a default value would freeze the value at class-definition time (before
+    # Railway injects env vars) and prevent pydantic from ever overriding it.
+    groq_api_key: str = ""
+    gemini_api_key: str = ""
+    sarvam_api_key: str = ""
 
     # Auth Settings
-    admin_username: str = os.getenv("ADMIN_USERNAME", "admin")
-    admin_password: str = os.getenv("ADMIN_PASSWORD", "admin")
-    secret_key: str = os.getenv("SECRET_KEY", "supersecretkey")
+    admin_username: str = "admin"
+    admin_password: str = "admin"
+    secret_key: str = "supersecretkey"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
-    
+
     # Direct Groq client initialization
     groq_client: Optional[Any] = None
-    
+
     # Gemini settings
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-    gemini_temperature: float = float(os.getenv("GEMINI_TEMPERATURE", "0.3"))
-    gemini_max_tokens: int = int(os.getenv("GEMINI_MAX_TOKENS", "500"))
-    
+    gemini_model: str = "gemini-2.0-flash"
+    gemini_temperature: float = 0.3
+    gemini_max_tokens: int = 500
+
     # Directories
-    chroma_persist_dir: str = os.getenv("CHROMA_PERSIST_DIR", "chroma_db")
-    upload_dir: str = os.getenv("UPLOAD_DIR", "uploads")
-    temp_audio_dir: str = os.getenv("TEMP_AUDIO_DIR", "temp_audio")
-    
+    chroma_persist_dir: str = "chroma_db"
+    upload_dir: str = "uploads"
+    temp_audio_dir: str = "temp_audio"
+
     # CORS settings
     cors_origins: str = "*"  # Comma-separated or *
-    
+
     # College information
-    college_name: str = os.getenv("COLLEGE_NAME", "Dr. B.C. Roy Engineering College")
-    admissions_phone: str = os.getenv("ADMISSIONS_PHONE", "0343-2501353")
-    support_email: str = os.getenv("SUPPORT_EMAIL", "info@bcrec.ac.in")
-    
+    college_name: str = "Dr. B.C. Roy Engineering College"
+    admissions_phone: str = "0343-2501353"
+    support_email: str = "info@bcrec.ac.in"
+
     class Config:
         env_file = ".env"
         extra = "ignore"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
-        # Debugging: Log status of environment variables (masked for security)
-        def mask_key(key):
-            if not key: return "MISSING"
-            if len(key) <= 8: return "****"
-            return f"{key[:4]}...{key[-4:]}"
-            
-        logger.info(f"Railway Env Check - GROQ_API_KEY: {mask_key(self.groq_api_key)}")
-        logger.info(f"Railway Env Check - SARVAM_API_KEY: {mask_key(self.sarvam_api_key)}")
-        
-        # Initialize Groq client if API key is available and library is installed
-        if GROQ_AVAILABLE and self.groq_api_key:
+
+        # Log what pydantic-settings resolved after reading os.environ / env_file
+        logger.info(f"[Settings] GROQ_API_KEY  resolved: {_mask(self.groq_api_key)}")
+        logger.info(f"[Settings] SARVAM_API_KEY resolved: {_mask(self.sarvam_api_key)}")
+
+        # Validate required keys and raise early with a clear message if missing
+        missing = []
+        if not self.groq_api_key:
+            missing.append("GROQ_API_KEY")
+        if not self.sarvam_api_key:
+            missing.append("SARVAM_API_KEY")
+        if missing:
+            msg = (
+                f"Required environment variable(s) not set: {', '.join(missing)}. "
+                "Please configure them in Railway (or your .env file for local development)."
+            )
+            logger.error(f"[Settings] {msg}")
+            raise ValueError(msg)
+
+        # Initialize Groq client
+        if GROQ_AVAILABLE:
             try:
                 self.groq_client = Groq(api_key=self.groq_api_key)
-                logger.info("Groq client initialized successfully")
+                logger.info("[Settings] Groq client initialized successfully")
             except Exception as e:
-                logger.error(f"Failed to initialize Groq client: {e}")
+                logger.error(f"[Settings] Failed to initialize Groq client: {e}")
                 self.groq_client = None
         else:
-            if not GROQ_AVAILABLE:
-                logger.error("Groq library NOT installed")
-            if not self.groq_api_key:
-                logger.error("GROQ_API_KEY is EMPTY or MISSING")
+            logger.error("[Settings] Groq library NOT installed — Groq features unavailable")
             self.groq_client = None
 
 # Create settings instance
