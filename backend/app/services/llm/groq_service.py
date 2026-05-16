@@ -72,16 +72,37 @@ Response: "With 20,000 rank in WBJEE, you can get CSE, IT, or ECE in BCREC. CSE 
         self.temperature = 0.3
         self.max_tokens = 500
         self.knowledge_base = self._load_knowledge_base()
-        
-        if GROQ_AVAILABLE and settings.groq_api_key:
+
+        # Reuse the Groq client that config.py already created after fully
+        # resolving all environment variables via pydantic-settings.  This
+        # avoids a second initialization and eliminates any timing window where
+        # settings.groq_api_key might appear empty.
+        if settings.groq_client is not None:
+            self.client = settings.groq_client
+            logger.info(
+                "GroqService: client acquired from settings.groq_client — service is AVAILABLE"
+            )
+        elif not GROQ_AVAILABLE:
+            logger.error(
+                "GroqService: groq library is not installed — service is UNAVAILABLE"
+            )
+        elif not settings.groq_api_key:
+            logger.error(
+                "GroqService: GROQ_API_KEY is empty after settings resolution — service is UNAVAILABLE"
+            )
+        else:
+            # Library present and key set, but settings.groq_client is None —
+            # this means config.py's own Groq() call failed.  Try once more so
+            # the service has the best possible chance of coming up.
             try:
                 self.client = Groq(api_key=settings.groq_api_key)
-                logger.info("Groq client initialized")
-            except Exception as e:
-                logger.error(f"Failed to initialize Groq client: {e}")
-                self.client = None
-        else:
-            logger.warning("Groq API key not configured or library not installed")
+                logger.info(
+                    "GroqService: client created via fallback initialization — service is AVAILABLE"
+                )
+            except Exception as exc:
+                logger.error(
+                    f"GroqService: fallback Groq client initialization failed: {exc} — service is UNAVAILABLE"
+                )
     
     def _load_knowledge_base(self) -> str:
         """Load and format the knowledge base for the prompt"""
